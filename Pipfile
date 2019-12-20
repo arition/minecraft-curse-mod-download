@@ -1,0 +1,17 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+pylint = "*"
+autopep8 = "*"
+
+[packages]
+selenium = "*"
+chromedriver-binary = "==78.0.3904.105.0"
+webdriverdownloader = "*"
+pyyaml = "*"
+
+[requires]
+python_version = "3.7"
