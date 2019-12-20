@@ -8,3 +8,4 @@ chromedriver
 .vscode
 *.json
 *.yaml
+__pycache__

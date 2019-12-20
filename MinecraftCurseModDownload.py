@@ -48,7 +48,7 @@ class MinecraftCurseModDownload():
         profile.set_preference('browser.download.folderList', 2)
         profile.set_preference('browser.download.manager.showWhenStarting', False)
         profile.set_preference('browser.download.dir', os.path.abspath(self.env_config['download-folder']))
-        profile.set_preference('browser.helperApps.neverAsk.saveToDisk', 'application/java-archive;application/x-java-archive;application/x-jar;application/x-amz-json-1.0')
+        profile.set_preference('browser.helperApps.neverAsk.saveToDisk', 'application/java-archive;application/x-java-archive;application/x-jar;application/x-amz-json-1.0;application/octet-stream')
         options = webdriver.FirefoxOptions()
         caps = DesiredCapabilities().FIREFOX
         caps['pageLoadStrategy'] = 'eager'
