@@ -23,7 +23,7 @@ class MinecraftCurseModDownload():
         self.logger.setLevel(logging.INFO)
 
         self.env_config = {
-            'driver': 'firefox',
+            'driver': 'chrome',
             'firefox-path': '',
             'headless': True,
             'download-folder': 'mods'
@@ -70,7 +70,9 @@ class MinecraftCurseModDownload():
         options.headless = self.env_config['headless']
         options.add_experimental_option('prefs', {
             'download.default_directory': os.path.abspath(self.env_config['download-folder']),
-            'download.prompt_for_download': False
+            'download.prompt_for_download': False,
+            'download.directory_upgrade': True,
+            'download_restrictions': 0
         })
 
         return webdriver.Chrome(options=options)
