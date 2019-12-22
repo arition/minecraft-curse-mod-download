@@ -9,7 +9,7 @@ autopep8 = "*"
 
 [packages]
 selenium = "*"
-chromedriver-binary = "==78.0.3904.105.0"
+chromedriver-binary = ">=79"
 webdriverdownloader = "*"
 pyyaml = "*"
 
