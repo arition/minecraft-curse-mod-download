@@ -1,11 +1,8 @@
-webdriver
 mods
-chrome_dir
 *.exe
-geckodriver
-chromedriver
 *.log
 .vscode
 *.json
 *.yaml
+Pipfile.lock
 __pycache__

@@ -1,18 +1,28 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.firefox.firefox_binary import FirefoxBinary
-from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
-from webdriverdownloader import GeckoDriverDownloader
-from webdriverdownloader import ChromeDriverDownloader
 import re
 import sys
 import os
-import threading
-import time
 import yaml
 import collections
 import logging
-import json
+import pathlib
+import cloudscraper
+import posixpath
+import traceback
+from tqdm import tqdm
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from urllib.parse import urlsplit
+
+
+class VersionNotFound(Exception):
+    def __init__(self, version):
+        super().__init__(self, f'Version {version} not found')
+        self.version = version
+
+
+class DownloadIncomplete(Exception):
+    def __init__(self):
+        super().__init__(self, 'Download Incomplete')
 
 
 class MinecraftCurseModDownload():
@@ -23,9 +33,6 @@ class MinecraftCurseModDownload():
         self.logger.setLevel(logging.INFO)
 
         self.env_config = {
-            'driver': 'chrome',
-            'firefox-path': '',
-            'headless': True,
             'download-folder': 'mods'
         }
         if os.path.isfile('env_config.yaml'):
@@ -35,47 +42,8 @@ class MinecraftCurseModDownload():
         with open('env_config.yaml', 'w', encoding='utf-8') as f:
             yaml.dump(self.env_config, f)
 
-        if 'driver' in self.env_config and self.env_config['driver'] == 'chrome':
-            self.driver = self.configure_chrome_driver()
-        else:
-            self.driver = self.configure_firefox_driver()
-
-    def configure_firefox_driver(self):
-        gdd = GeckoDriverDownloader(download_root='webdriver', link_path='.')
-        gdd.download_and_install()
-
-        profile = webdriver.FirefoxProfile()
-        profile.set_preference('browser.download.folderList', 2)
-        profile.set_preference('browser.download.manager.showWhenStarting', False)
-        profile.set_preference('browser.download.dir', os.path.abspath(self.env_config['download-folder']))
-        profile.set_preference('browser.helperApps.neverAsk.saveToDisk', 'application/java-archive;application/x-java-archive;application/x-jar;application/x-amz-json-1.0;application/octet-stream')
-        options = webdriver.FirefoxOptions()
-        caps = DesiredCapabilities().FIREFOX
-        caps['pageLoadStrategy'] = 'eager'
-        options.headless = self.env_config['headless']
-
-        if self.env_config['firefox-path'] != '':
-            firefox_dev_binary = FirefoxBinary(self.env_config['firefox-path'])
-            return webdriver.Firefox(capabilities=caps, options=options, firefox_binary=firefox_dev_binary, firefox_profile=profile)
-        return webdriver.Firefox(capabilities=caps, options=options, firefox_profile=profile)
-
-    def configure_chrome_driver(self):
-        cdd = ChromeDriverDownloader(download_root='webdriver', link_path='.')
-        cdd.download_and_install()
-
-        options = webdriver.ChromeOptions()
-        options.add_argument('user-data-dir=chrome_dir')
-        options.add_argument('blink-settings=imagesEnabled=false')
-        options.add_argument('safebrowsing-disable-download-protection')
-        options.headless = self.env_config['headless']
-        options.add_experimental_option('prefs', {
-            'download.default_directory': os.path.abspath(self.env_config['download-folder']),
-            'download.prompt_for_download': False,
-            'download.directory_upgrade': True,
-            'download_restrictions': 0
-        })
-
-        return webdriver.Chrome(options=options)
+        self.session = cloudscraper.create_scraper()
+        self.download_folder = self.env_config['download-folder']
 
     def download(self, mods_info_file):
         mods_info_dict = {}
@@ -84,35 +52,67 @@ class MinecraftCurseModDownload():
 
         for mod_url in set(self.flat_gen(mods_info_dict['Mods'])):
             self.logger.info(f'Downloading {mod_url}')
-            if re.match(r'https?://www.curseforge.com/minecraft/mc-mods/', mod_url):
-                self.download_file(self.parse_curse_url(mod_url, mods_info_dict))
-            else:
-                self.download_file(mod_url)
-        # we never know if downloading has been completed, so just wait for 10 secs
-        time.sleep(10)
+            try:
+                if re.match(r'https?://www.curseforge.com/minecraft/mc-mods/', mod_url):
+                    self.download_file(
+                        self.parse_curse_url(mod_url, mods_info_dict))
+                else:
+                    self.download_file(mod_url)
+            except Exception:
+                tb = traceback.format_exc()
+                self.logger.error(f'Error downloading {mod_url}')
+                self.logger.error(f'{tb}')
+
+    def get_html(self, url, *args, **kwargs):
+        response = self.session.get(url, *args, **kwargs)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        return soup
 
     def parse_curse_url(self, mod_url, config):
         if re.search(r'\/files\/\d+', mod_url) is None:
-            self.driver.get(mod_url)
-            version_titles = self.driver.find_elements(By.CSS_SELECTOR, '.e-sidebar-subheader')
-            version_urls = self.driver.find_elements(By.CSS_SELECTOR, '.cf-recentfiles')
-            for version_title, version_url in zip(version_titles, version_urls):
-                version = re.search(r'\d+\.\d+', version_title.text).group(0)
-                if version not in config['Version']:
-                    continue
-                version_url_element = max(version_url.find_elements(By.CSS_SELECTOR, 'li'), key=lambda t: int(t.find_element(By.CSS_SELECTOR, 'abbr').get_attribute('data-epoch')))
-                mod_url = version_url_element.find_element(By.CSS_SELECTOR, 'a').get_attribute('href')
+            file_page_url = mod_url + "/files/all"
+            file_page_html = self.get_html(file_page_url)
+            game_version_options = file_page_html.select(
+                "select#filter-game-version > option")
+            version_code = None
+            for version_option in game_version_options:
+                if version_option.text.strip() in config['Version']:
+                    version_code = version_option.get("value")
+                    break
+            if not version_code:
+                raise VersionNotFound(config['Version'])
+            version_page_html = self.get_html(file_page_url, params={
+                "filter-game-version": version_code
+            })
+            file_table_entries = version_page_html.select("table.listing tr")
+            latest_file = file_table_entries[1]
+            file_path = latest_file.select("td")[1].select_one("a").get("href")
+            mod_url = urljoin(file_page_url, file_path)
 
         download_url = re.sub(r'\/files\/', '/download/', mod_url)
         return f'{download_url}/file'
 
     def download_file(self, url):
-        self.driver.execute_script(f'window.open("{url}","_blank");')
-
-    def quit(self):
-        self.driver.quit()
+        pathlib.Path(self.download_folder).mkdir(parents=True, exist_ok=True)
+        response = self.session.get(url, stream=True)
+        response.raise_for_status()
+        final_url = response.url
+        file_name = posixpath.basename(urlsplit(final_url).path)
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 1024
+        save_path = os.path.join(self.download_folder, file_name)
+        progress = tqdm(total=total_size, unit='iB', unit_scale=True)
+        with open(save_path, 'wb') as f:
+            for data in response.iter_content(block_size):
+                progress.update(len(data))
+                f.write(data)
+        progress.close()
+        f.close()
+        if total_size != 0 and progress.n != total_size:
+            raise DownloadIncomplete()
 
     # https://stackoverflow.com/questions/16176742/python-3-replacement-for-deprecated-compiler-ast-flatten-function
+
     def flat_gen(self, x):
         def iselement(e):
             return not(isinstance(e, collections.Iterable) and not isinstance(e, str))
