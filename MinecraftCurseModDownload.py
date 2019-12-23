@@ -66,6 +66,7 @@ class MinecraftCurseModDownload():
 
     def get_html(self, url, *args, **kwargs):
         response = self.session.get(url, *args, **kwargs)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         return soup
 
