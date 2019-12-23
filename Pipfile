@@ -6,12 +6,14 @@ verify_ssl = true
 [dev-packages]
 pylint = "*"
 autopep8 = "*"
+autoflake = "*"
 
 [packages]
-selenium = "*"
-chromedriver-binary = ">=79"
-webdriverdownloader = "*"
 pyyaml = "*"
+beautifulsoup4 = "*"
+requests = "*"
+cloudscraper = "*"
+tqdm = "*"
 
 [requires]
 python_version = "3.7"
