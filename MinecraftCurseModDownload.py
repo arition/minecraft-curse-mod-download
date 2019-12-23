@@ -50,8 +50,9 @@ class MinecraftCurseModDownload():
         with open(mods_info_file, 'r', encoding='utf-8') as f:
             mods_info_dict = yaml.load(f, Loader=yaml.FullLoader)
 
-        for mod_url in set(self.flat_gen(mods_info_dict['Mods'])):
-            self.logger.info(f'Downloading {mod_url}')
+        mod_urls = set(self.flat_gen(mods_info_dict['Mods']))
+        for i, mod_url in enumerate(mod_urls):
+            self.logger.info(f'Downloading {mod_url} ({i+1}/{len(mod_urls)})')
             try:
                 if re.match(r'https?://www.curseforge.com/minecraft/mc-mods/', mod_url):
                     self.download_file(
@@ -65,6 +66,7 @@ class MinecraftCurseModDownload():
 
     def get_html(self, url, *args, **kwargs):
         response = self.session.get(url, *args, **kwargs)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         return soup
 
@@ -101,6 +103,9 @@ class MinecraftCurseModDownload():
         total_size = int(response.headers.get('content-length', 0))
         block_size = 1024
         save_path = os.path.join(self.download_folder, file_name)
+        if os.path.exists(save_path):
+            self.logger.info("File exists, skipping")
+            return
         progress = tqdm(total=total_size, unit='iB', unit_scale=True)
         with open(save_path, 'wb') as f:
             for data in response.iter_content(block_size):
@@ -109,6 +114,7 @@ class MinecraftCurseModDownload():
         progress.close()
         f.close()
         if total_size != 0 and progress.n != total_size:
+            os.remove(save_path)
             raise DownloadIncomplete()
 
     # https://stackoverflow.com/questions/16176742/python-3-replacement-for-deprecated-compiler-ast-flatten-function
