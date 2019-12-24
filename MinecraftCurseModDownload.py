@@ -5,6 +5,7 @@ import yaml
 import collections
 import logging
 import pathlib
+import hashlib
 import cloudscraper
 import posixpath
 import traceback
@@ -44,21 +45,60 @@ class MinecraftCurseModDownload():
 
         self.session = cloudscraper.create_scraper()
         self.download_folder = self.env_config['download-folder']
+        self.mods_lock_dict = {"files": {}, "mods": {}}
+        self.mods_lock_updated = {}
 
-    def download(self, mods_info_file):
+    # update: if set to True, would update existing mods in Lock file to latest version, otherwise, would always use existing version in Lock file if present
+
+    def download(self, mods_info_file, update=False):
         mods_info_dict = {}
         with open(mods_info_file, 'r', encoding='utf-8') as f:
             mods_info_dict = yaml.load(f, Loader=yaml.FullLoader)
+
+        mods_lock_file = f"{mods_info_file}.lock"
+        if os.path.exists(mods_lock_file):
+            with open(mods_lock_file, 'r', encoding='utf-8') as f:
+                self.mods_lock_dict = yaml.load(f, Loader=yaml.FullLoader)
 
         mod_urls = set(self.flat_gen(mods_info_dict['Mods']))
         for i, mod_url in enumerate(mod_urls):
             self.logger.info(f'Downloading {mod_url} ({i+1}/{len(mod_urls)})')
             try:
-                if re.match(r'https?://www.curseforge.com/minecraft/mc-mods/', mod_url):
-                    self.download_file(
-                        self.parse_curse_url(mod_url, mods_info_dict))
+                if not update and mod_url in self.mods_lock_dict['mods']:
+                    file_name = self.mods_lock_dict['mods'][mod_url]
+                    download_url = self.mods_lock_dict['files'][file_name]['url']
+                    self.download_file(mod_url, download_url, file_name)
                 else:
-                    self.download_file(mod_url)
+                    if re.match(r'https?://www.curseforge.com/minecraft/mc-mods/', mod_url):
+                        download_url = self.parse_curse_url(
+                            mod_url, mods_info_dict)
+                        self.download_file(mod_url, download_url)
+                    else:
+                        self.download_file(mod_url, mod_url)
+            except Exception:
+                tb = traceback.format_exc()
+                self.logger.error(f'Error downloading {mod_url}')
+                self.logger.error(f'{tb}')
+
+        self.mods_lock_dict['mods'] = self.mods_lock_updated
+        with open(mods_lock_file, 'w', encoding='utf-8') as f:
+            yaml.dump(self.mods_lock_dict, f)
+
+    # Download mods according to Lock file
+    # Lock file contains two dicts:
+    #    'mods' dict stores mapping from mods (as identified by mod URL) to their locked version file names
+    #    'files' dict stores sha256sum of mod versions, indexed by version file names
+    def download_locked_version(self, mods_lock_file):
+        with open(mods_lock_file, 'r', encoding='utf-8') as f:
+            self.mods_lock_dict = yaml.load(f, Loader=yaml.FullLoader)
+        total_mods_number = len(self.mods_lock_dict['mods'])
+        for i, mod_url in enumerate(self.mods_lock_dict['mods']):
+            self.logger.info(
+                f'Downloading {mod_url} ({i+1}/{total_mods_number})')
+            try:
+                file_name = self.mods_lock_dict['mods'][mod_url]
+                download_url = self.mods_lock_dict['files'][file_name]['url']
+                self.download_file(mod_url, download_url, file_name)
             except Exception:
                 tb = traceback.format_exc()
                 self.logger.error(f'Error downloading {mod_url}')
@@ -94,18 +134,29 @@ class MinecraftCurseModDownload():
         download_url = re.sub(r'\/files\/', '/download/', mod_url)
         return f'{download_url}/file'
 
-    def download_file(self, url):
-        pathlib.Path(self.download_folder).mkdir(parents=True, exist_ok=True)
-        response = self.session.get(url, stream=True)
-        response.raise_for_status()
-        final_url = response.url
-        file_name = posixpath.basename(urlsplit(final_url).path)
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        save_path = os.path.join(self.download_folder, file_name)
-        if os.path.exists(save_path):
+    # mod_url: URL for identifying the mod in modlist.yml
+    # download_url: URL for downloading the specific version of the mod
+    # file_name: file name for saving the downloaded file
+    #
+    # This function would perform check on existing files accroding to sha256sums from Lock file
+    # If file_name is set to an non-empty string, pre-request check for existing files would be performed, this helps performance
+    # This function would update Lock file if it finds that the version downloaded for a mod is changed
+    def download_file(self, mod_url, download_url, file_name=""):
+        if file_name and self.hash_check(file_name):
             self.logger.info("File exists, skipping")
             return
+        pathlib.Path(self.download_folder).mkdir(parents=True, exist_ok=True)
+        response = self.session.get(download_url, stream=True)
+        response.raise_for_status()
+        final_url = response.url
+        if not file_name:
+            file_name = posixpath.basename(urlsplit(final_url).path)
+            if self.hash_check(file_name):
+                self.logger.info("File exists, skipping")
+                return
+        save_path = os.path.join(self.download_folder, file_name)
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 1024
         progress = tqdm(total=total_size, unit='iB', unit_scale=True)
         with open(save_path, 'wb') as f:
             for data in response.iter_content(block_size):
@@ -116,6 +167,37 @@ class MinecraftCurseModDownload():
         if total_size != 0 and progress.n != total_size:
             os.remove(save_path)
             raise DownloadIncomplete()
+        if file_name in self.mods_lock_dict['files']:
+            if not self.hash_check(file_name):
+                os.remove(save_path)
+                raise DownloadIncomplete()
+        else:
+            self.mods_lock_dict['files'][file_name] = {
+                "url": download_url,
+                "mod_url": mod_url,
+                "sha256sum": self.get_sha256_for_file(save_path)
+            }
+        if file_name != self.mods_lock_dict['mods'].get(mod_url, ''):
+            self.logger.info(f'{mod_url}: Locked version updated')
+        self.mods_lock_updated[mod_url] = file_name
+
+    # Check if file_name in download folder matches the version recorded in Lock file
+    # If file_name is not recorded in Lock file, would return False
+    def hash_check(self, file_name):
+        save_path = os.path.join(self.download_folder, file_name)
+        if os.path.exists(save_path) and file_name in self.mods_lock_dict['files']:
+            existing_file_hash = self.get_sha256_for_file(save_path)
+            locked_hash = self.mods_lock_dict['files'][file_name].get(
+                'sha256sum', '')
+            return locked_hash == existing_file_hash
+        return False
+
+    def get_sha256_for_file(self, filepath):
+        sha256_hash = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
 
     # https://stackoverflow.com/questions/16176742/python-3-replacement-for-deprecated-compiler-ast-flatten-function
 
