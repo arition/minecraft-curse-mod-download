@@ -144,6 +144,7 @@ class MinecraftCurseModDownload():
     def download_file(self, mod_url, download_url, file_name=""):
         if file_name and self.hash_check(file_name):
             self.logger.info("File exists, skipping")
+            self.mods_lock_updated[mod_url] = file_name
             return
         pathlib.Path(self.download_folder).mkdir(parents=True, exist_ok=True)
         response = self.session.get(download_url, stream=True)
@@ -153,6 +154,7 @@ class MinecraftCurseModDownload():
             file_name = posixpath.basename(urlsplit(final_url).path)
             if self.hash_check(file_name):
                 self.logger.info("File exists, skipping")
+                self.mods_lock_updated[mod_url] = file_name
                 return
         save_path = os.path.join(self.download_folder, file_name)
         total_size = int(response.headers.get('content-length', 0))
